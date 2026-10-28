@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 暗号化しない HTTP 通信は禁止する。研究室サーバーの自己署名の証明書は、アプリ側で公開鍵のフィンガープリントを確認する -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

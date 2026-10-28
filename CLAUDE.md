@@ -9,7 +9,7 @@
 このアプリは、**Android スマートフォンを三脚などで教室前方に固定し、あらかじめ登録した複数の「撮影領域(ズーム倍率+位置)」を順番に自動で撮影するカメラアプリ**である。奥の席をズームで撮ることで、解析に使える画素数を確保する。
 
 - 撮影はスマホ1台で完結させる(教室全体を写すプリセットもこのアプリで撮影する)
-- 出力は静止画とメタデータで、後から PC に移して Posture_Judgment で解析する
+- 出力は静止画とメタデータ。端末に保存して後から PC に移すか、研究室サーバーへ送り(§5.8)、Posture_Judgment で解析する
 - 配布形態は APK。**特定の機種に依存せず、Android 端末全般で動くこと。** そのうえで、端末ごとに使える一番良いカメラ機能を自動で選んで使う
 
 ## 2. 対象端末と、端末ごとの違いへの対応方針
@@ -152,7 +152,26 @@ t=0 A → t=1 B → t=2 C → t=3 A → t=4 B → t=5 C → t=6 A ...
 
 - 画像は**アプリ専用の外部ストレージ**(`getExternalFilesDir`)に保存する。`MediaStore` の共有の写真フォルダには保存しない(写真アプリの自動バックアップによるクラウドへのアップロードや、ギャラリーへの表示を防ぐため)
 - Android の自動バックアップ(`android:allowBackup` / `dataExtractionRules`)の対象から撮影データを外す
-- 撮影データを外部サービスへ送信する機能は持たせない(`INTERNET` 権限を要求しない)
+- 撮影データの送信先は、ユーザーが登録した研究室サーバー(§5.8)だけにする。クラウドなど外部のサービスへ送る機能は持たせない
+- `INTERNET` 権限はサーバーへの送信のためだけに使う。暗号化しない HTTP 通信は `networkSecurityConfig` で禁止する
+
+### 5.8 保存先の選択と研究室サーバーへの送信
+
+保存先は3つから選ぶ(「保存先の設定」画面)。セッションの開始時に決まり、`session.json` の `storageMode` に記録する。
+
+| モード | 動作 |
+|---|---|
+| 端末のみ(`LOCAL_ONLY`) | 端末に保存するだけ。あとからセッション一覧で「サーバーへ送る」こともできる |
+| 端末+サーバー(`LOCAL_AND_SERVER`) | 端末に保存し、撮影しながら裏でサーバーに送る。送った後も端末に残す |
+| サーバー(`SERVER_DELETE_LOCAL`) | 端末に保存してサーバーに送り、セッションの撮影が終わってサーバーが全ファイルを受け取ったこと(finalize)を確認してから端末の画像を削除する。`session.json` と `captures.csv` は端末に残す |
+
+- **どのモードでも、まず端末に保存する。** 1秒に1枚(約 30Mbps)を講義中の混み合う Wi-Fi で送り続けることになるので、撮影のタイミングを通信に左右させない
+- サーバーは研究室のサーバーで、学内の IP アドレスで接続する(`server/`。FastAPI + uvicorn。構築と運用は `server/README.md`)。学内のネットワークには学生も接続するので、HTTPS(自己署名の証明書を公開鍵のフィンガープリントで固定)と端末ごとのトークンを必須にする
+- 端末の登録: サーバーで `add-device` を実行すると QR コード(URL・端末名・トークン・フィンガープリント)が表示されるので、アプリで読み取る。トークンは Android Keystore の鍵で暗号化して保存する
+- 送る順番: `session.json` → `captures.csv` のまだ送っていない行について、その行の画像を送る → 行を追記する。サーバーの `captures.csv` は端末とバイト単位で同じ内容になり、サーバーにある画像の行だけが並ぶ。すべて冪等で、途中で切れても続きから送り直せる
+- 撮影中は、優先度の低いスレッド1本で1ファイルずつ送る。直近の撮影で遅延・スキップ・失敗が増えたとき、または端末が非常に熱いときは送信を一時停止する(`UploadThrottle`)
+- アプリが閉じられた後の送り残しは WorkManager(`UploadWorker`)が送る
+- サーバーでは `sessions/<端末名>/<セッション>/` に保存し、全部受け取ると `upload_complete.json` を作る
 
 ## 6. 出力形式
 
@@ -204,7 +223,7 @@ t=0 A → t=1 B → t=2 C → t=3 A → t=4 B → t=5 C → t=6 A ...
 | `af_state`, `ae_state` | 撮影時の AF / AE の状態 |
 | `file` | セッションフォルダからの画像の相対パス |
 
-PC への転送は、当面は USB 接続でセッションフォルダを丸ごとコピーする(`Android/data/<パッケージ名>/files/sessions/`)。
+PC への転送は、USB 接続でセッションフォルダを丸ごとコピーする(`Android/data/<パッケージ名>/files/sessions/`)か、研究室サーバーへ送る(§5.8)。サーバーでも同じフォルダ構成で保存する。
 
 ## 7. 技術スタック
 
@@ -212,7 +231,9 @@ PC への転送は、当面は USB 接続でセッションフォルダを丸ご
 - UI: **Jetpack Compose**(Material 3)
 - カメラ: **Camera2 API を直接使う**。CameraX はリクエストごとにズーム倍率・切り出し領域・測光領域・ピント位置を細かく変えたり、最大解像度モードや物理カメラの情報を扱ったりするのに向かないため。Camera Extensions も Camera2 の `CameraExtensionSession` を使う。プレビューは `SurfaceView` を Compose の `AndroidView` で表示する
 - 非同期処理: Kotlin Coroutines / Flow
-- 設定・プリセットの保存: kotlinx.serialization(JSON ファイル)+ SharedPreferences(選択中のプリセットセット名だけ)
+- 設定・プリセットの保存: kotlinx.serialization(JSON ファイル)+ SharedPreferences(選択中のプリセットセット名、保存先とサーバーの設定)
+- サーバーへの送信: OkHttp(公開鍵のフィンガープリントによる証明書の確認)、WorkManager、QR コードの読み取りは zxing-android-embedded
+- 受信サーバー(`server/`): Python 3.11 以上、FastAPI + uvicorn(TLS も uvicorn で扱う)、SQLite
 - ビルド: Gradle(Kotlin DSL)、バージョンカタログ(`libs.versions.toml`)
 - `minSdk` 31(Android 12)、`targetSdk` は最新の安定版。API 33 / 34 以上でしか使えない機能は、`Build.VERSION.SDK_INT` を確認したうえで使う
 - 画面の向きは横向きに固定する(三脚で教室を横長に撮るため)。ただし Android 16 以降の大画面の端末では固定が無視されることがあるので、画面の回転は `displayRotationDegrees` で常に追従させ、座標変換は `CoordinateMapper` の rotation で吸収する
@@ -265,6 +286,18 @@ Feature_Camera_App/
     │   │   └── StorageEstimator.kt      # 必要な容量・撮り続けられる時間の見積もり
     │   ├── monitor/
     │   │   └── DeviceMonitor.kt         # バッテリー・温度・空き容量の監視
+    │   ├── upload/
+    │   │   ├── ServerConfig.kt          # 保存先のモード、サーバーの接続設定(QR コードの内容)
+    │   │   ├── UploadApi.kt             # 受信 API のインターフェース(テストでは偽物に差し替える)
+    │   │   ├── ServerClient.kt          # OkHttp での実装
+    │   │   ├── PinnedTrust.kt           # 自己署名の証明書を公開鍵のフィンガープリントで確認する
+    │   │   ├── SessionUploader.kt       # 1セッション分の送信(冪等・再開可能。Android に依存しない)
+    │   │   ├── CsvTail.kt               # 書き込み中の captures.csv を行の途中で切らずに読む
+    │   │   ├── UploadStateStore.kt      # セッションごとの送信状態(アプリ内部の領域)
+    │   │   ├── UploadThrottle.kt        # 撮影が遅れたら送信を一時停止する
+    │   │   ├── UploadSettingsStore.kt   # 保存先とサーバーの設定(トークンは Keystore で暗号化)
+    │   │   ├── UploadManager.kt         # 送信のループと状態(プロセスに1つ)
+    │   │   └── UploadWorker.kt          # アプリが閉じられた後の送り残しを送る(WorkManager)
     │   └── ui/
     │       ├── AppViewModel.kt          # 画面の状態と操作(カメラの開閉、テスト撮影、自動撮影の開始・停止)
     │       ├── common/                  # テーマ、カメラプレビュー、サムネイル、表示用の書式
@@ -272,8 +305,17 @@ Feature_Camera_App/
     │       ├── preseteditor/            # プレビュー上での矩形指定、撮影方式の選択、テスト撮影
     │       ├── capture/                 # 自動撮影中の画面
     │       ├── sessions/                # 過去のセッションの一覧
+    │       ├── server/                  # 保存先の選択、サーバーの設定(QR の読み取り・接続テスト)
     │       └── deviceinfo/              # この端末のカメラ情報(CapabilityReport の表示)
-    └── test/java/<パッケージ>/           # ZoomPlanner, LensModel, CoordinateMapper, SlotPlanner などの単体テスト
+    └── test/java/<パッケージ>/           # ZoomPlanner, LensModel, CoordinateMapper, SlotPlanner, SessionUploader などの単体テスト
+server/                                    # 研究室サーバー(受信 API)。README.md を参照
+├── zoomcapture_server/
+│   ├── main.py      # FastAPI のルーティング
+│   ├── storage.py   # パスの検証、壊れたファイルを残さない書き込み、captures.csv の追記
+│   ├── db.py        # SQLite(端末・セッション・受信済みファイル)
+│   ├── certs.py     # 自己署名の証明書とフィンガープリント
+│   └── admin.py     # init / add-device / revoke-device / serve などのコマンド
+└── tests/
 ```
 
 - `ui/*` には画面の表示と操作だけを書き、撮影やスケジュールのロジックは書かない(ViewModel から `camera/` `schedule/` を呼ぶ)
@@ -319,7 +361,8 @@ Feature_Camera_App/
 - デジタルズームした画像の保存サイズ: ISP は切り出した部分を出力サイズまで拡大するが、拡大した分の情報は増えない。容量を減らすため、切り出し領域のもともとの画素数のまま保存する(YUV で受け取って端末側で JPEG にする)方式も検討する
 - ピント固定の運用で問題がないか(教室の温度変化などでピントがずれないか)
 - 撮影中に教室全体の動画も同時に残す必要があるか
-- PC への転送方法を USB コピーより簡単にするか(例: adb を使うスクリプト)
+- 教室の Wi-Fi から研究室サーバーに届くか、撮影しながらどの程度送れるか(講義中の Wi-Fi の混み具合)
+- サーバーに届いたセッションを Posture_Judgment が自動で解析し始める仕組み(`upload_complete.json` を目印にする)
 
 ## 13. ビルドと実装状況
 
@@ -328,10 +371,16 @@ Feature_Camera_App/
 ```bash
 # JDK 17 以上(この PC では JDK 21)と Android SDK(platform 36 / build-tools 36)が必要
 # SDK の場所は local.properties の sdk.dir(Git には含めない)
-./gradlew testDebugUnitTest   # 単体テスト(ZoomPlanner, CoordinateMapper, SlotPlanner, ScheduleValidator, StorageEstimator, CSV)
+./gradlew testDebugUnitTest   # 単体テスト(ZoomPlanner, CoordinateMapper, SlotPlanner, ScheduleValidator, StorageEstimator, CSV, SessionUploader)
 ./gradlew assembleDebug       # APK: app/build/outputs/apk/debug/app-debug.apk
 ./gradlew lintDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+# 受信サーバー
+cd server && pip install -e ".[test]" && pytest
+
+# アプリとサーバーの結合テスト: サーバーを起動し、add-device が表示した文字列とデータフォルダを渡す
+ZC_E2E_PAIRING='{"v":1,...}' ZC_E2E_DATA=<データフォルダ> ./gradlew testDebugUnitTest --tests '*ServerEndToEndTest*'
 ```
 
 ### 実装済み
@@ -342,10 +391,12 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - 撮影方式: 標準 JPEG / 最大解像度 / JPEG+RAW / 連写
 - ラウンドロビンの自動撮影(`CaptureScheduler`)、遅延・スキップ・失敗の記録、容量不足での自動停止、温度の警告
 - セッションフォルダ・`session.json`・`captures.csv` の出力、セッション一覧と削除
+- 保存先の選択(端末のみ / 端末+サーバー / サーバー)と研究室サーバーへの送信(§5.8)、受信サーバー(`server/`)。PC 上ではサーバーを起動してアプリの送信処理から実際に送る結合テストまで確認済み
 
 ### 未実装・未確認
 
 - **実機での動作確認はまだしていない**(ビルドと単体テストのみ確認済み)。特に次の点は実機で確認が必要:
+  - 教室の Wi-Fi から研究室サーバーへの送信、QR コードの読み取り、撮影中に送信したときの遅延・スキップの増え方
   - プレビューの向きと、ドラッグした矩形と実際の撮影範囲が一致するか
   - `CONTROL_ZOOM_RATIO` と `SCALER_CROP_REGION` を組み合わせたときに、端末が想定どおりに切り出すか
   - 最大解像度モード・RAW を含むセッション構成が通るか(通らない場合は自動で外して作り直す)

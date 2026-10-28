@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -29,7 +30,10 @@ import androidx.compose.ui.unit.dp
 import com.studentanalysis.zoomcapture.ui.AppViewModel
 import com.studentanalysis.zoomcapture.ui.Screen
 import com.studentanalysis.zoomcapture.ui.SessionSummary
+import com.studentanalysis.zoomcapture.ui.common.Warning
 import com.studentanalysis.zoomcapture.ui.common.formatBytes
+import com.studentanalysis.zoomcapture.upload.StorageMode
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -39,7 +43,14 @@ fun SessionsScreen(vm: AppViewModel) {
     var reload by remember { mutableIntStateOf(0) }
     var sessions by remember { mutableStateOf<List<SessionSummary>?>(null) }
     var deleting by remember { mutableStateOf<SessionSummary?>(null) }
-    LaunchedEffect(reload) { sessions = vm.listSessions() }
+    val upload by vm.uploadStatus.collectAsState()
+    LaunchedEffect(reload) {
+        // 送信の進み具合を表示するため、定期的に読み直す
+        while (true) {
+            sessions = vm.listSessions()
+            delay(5_000)
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -47,7 +58,8 @@ fun SessionsScreen(vm: AppViewModel) {
             Text("セッション一覧", style = MaterialTheme.typography.titleMedium)
         }
         Text(
-            "PC へは USB で接続し、次のフォルダをコピーしてください: ${vm.sessionsRootPath}",
+            "PC へは USB で接続し、次のフォルダをコピーしてください: ${vm.sessionsRootPath}" +
+                (upload.server?.let { "(サーバー ${it.url} に送ったセッションは、サーバーの sessions/${it.device}/ にあります)" } ?: ""),
             style = MaterialTheme.typography.bodySmall,
         )
         val list = sessions
@@ -70,6 +82,24 @@ fun SessionsScreen(vm: AppViewModel) {
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                                 info?.stopReason?.let { Text("停止理由: $it", style = MaterialTheme.typography.bodySmall) }
+                                val mode = StorageMode.fromName(info?.storageMode)
+                                val u = s.upload
+                                val uploadText = when {
+                                    u.finalized && u.localDeleted -> "サーバー: 送信完了(端末の画像は削除済み)"
+                                    u.finalized -> "サーバー: 送信完了"
+                                    mode.usesServer || u.requested -> "サーバー: 送信中 ${u.sentRows} / ${u.totalRows} 件"
+                                    else -> "サーバー: 送っていません(端末のみ)"
+                                }
+                                Text(uploadText, style = MaterialTheme.typography.bodySmall)
+                                u.lastError?.takeIf { !u.finalized }?.let {
+                                    Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = Warning)
+                                }
+                            }
+                            if (!s.upload.finalized && !StorageMode.fromName(s.info?.storageMode).usesServer && !s.upload.requested) {
+                                TextButton(onClick = {
+                                    vm.requestUpload(s.dir)
+                                    reload++
+                                }, enabled = upload.server != null) { Text("サーバーへ送る") }
                             }
                             TextButton(onClick = { deleting = s }) { Text("削除") }
                         }

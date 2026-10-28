@@ -1,0 +1,24 @@
+[project]
+name = "zoomcapture-server"
+version = "0.1.0"
+description = "講義ズーム撮影アプリ(Feature_Camera_App)の画像を受け取る研究室サーバー"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "cryptography>=43",
+    "qrcode>=8.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "httpx>=0.27"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["zoomcapture_server"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

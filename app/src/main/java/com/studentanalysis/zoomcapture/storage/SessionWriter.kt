@@ -30,6 +30,10 @@ data class SessionInfo(
     val presets: List<PresetRecord>,
     val warnings: List<String> = emptyList(),
     val shotCount: Long = 0,
+    /** 保存先(upload.StorageMode の名前)。サーバーに送るかどうかはこの値で決まる */
+    val storageMode: String = "LOCAL_ONLY",
+    /** 送り先のサーバーでの端末名 */
+    val serverDevice: String? = null,
 )
 
 /** セッションフォルダの作成と session.json の書き出し */

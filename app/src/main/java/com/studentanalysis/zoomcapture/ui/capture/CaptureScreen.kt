@@ -60,6 +60,7 @@ fun CaptureScreen(vm: AppViewModel) {
     val progress by vm.captureProgress.collectAsState()
     val status by vm.deviceStatus.collectAsState()
     val dimmed by vm.dimmed.collectAsState()
+    val upload by vm.uploadStatus.collectAsState()
     val c = cap ?: return
     val s = set ?: return
 
@@ -125,6 +126,13 @@ fun CaptureScreen(vm: AppViewModel) {
             )
             if (progress.thermalWarning) Text("⚠ 撮影中に端末の温度が非常に高くなりました", color = Warning)
             progress.message?.let { Text(it, color = Warning, style = MaterialTheme.typography.bodySmall) }
+            upload.live?.let { u ->
+                Text(
+                    "サーバー送信 ${u.sentRows} / ${u.totalRows} 件" +
+                        (if (u.finalized) "(完了)" else "") + (upload.pausedReason?.let { "(${it})" } ?: ""),
+                )
+                upload.lastError?.let { Text("⚠ 送信エラー: $it(端末には保存しています)", color = Warning, style = MaterialTheme.typography.bodySmall) }
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 s.enabledPresets.forEach { p ->

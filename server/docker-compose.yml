@@ -1,0 +1,12 @@
+services:
+  zoomcapture:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      # 撮影データ・証明書・データベース。大きな容量のディスクに置く
+      - ./data:/data
+    environment:
+      # サーバーの空きがこれを下回ったら受け取りを止める(GB)
+      ZC_MIN_FREE_GB: "20"

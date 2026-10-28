@@ -37,6 +37,7 @@ import com.studentanalysis.zoomcapture.ui.common.ZoomCaptureTheme
 import com.studentanalysis.zoomcapture.ui.deviceinfo.DeviceInfoScreen
 import com.studentanalysis.zoomcapture.ui.home.HomeScreen
 import com.studentanalysis.zoomcapture.ui.preseteditor.PresetEditorScreen
+import com.studentanalysis.zoomcapture.ui.server.ServerSettingsScreen
 import com.studentanalysis.zoomcapture.ui.sessions.SessionsScreen
 
 class MainActivity : ComponentActivity() {
@@ -91,6 +92,7 @@ private fun AppRoot(vm: AppViewModel) {
             Screen.CAPTURE -> CaptureScreen(vm)
             Screen.SESSIONS -> SessionsScreen(vm)
             Screen.DEVICE_INFO -> DeviceInfoScreen(vm)
+            Screen.SERVER -> ServerSettingsScreen(vm)
         }
     }
 }

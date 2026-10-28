@@ -30,6 +30,12 @@ import com.studentanalysis.zoomcapture.storage.SessionInfo
 import com.studentanalysis.zoomcapture.storage.SessionWriter
 import com.studentanalysis.zoomcapture.storage.ShotSpec
 import com.studentanalysis.zoomcapture.storage.StorageEstimator
+import com.studentanalysis.zoomcapture.upload.HealthInfo
+import com.studentanalysis.zoomcapture.upload.ServerConfig
+import com.studentanalysis.zoomcapture.upload.SessionUploadState
+import com.studentanalysis.zoomcapture.upload.StorageMode
+import com.studentanalysis.zoomcapture.upload.UploadManager
+import com.studentanalysis.zoomcapture.upload.UploadStatus
 import com.studentanalysis.zoomcapture.zoom.CoordinateMapper
 import com.studentanalysis.zoomcapture.zoom.NormRect
 import com.studentanalysis.zoomcapture.zoom.ZoomPlan
@@ -45,7 +51,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Date
 
-enum class Screen { HOME, EDITOR, CAPTURE, SESSIONS, DEVICE_INFO }
+enum class Screen { HOME, EDITOR, CAPTURE, SESSIONS, DEVICE_INFO, SERVER }
 
 sealed interface CameraState {
     data object Closed : CameraState
@@ -71,7 +77,13 @@ data class StorageEstimate(
     val secondsRemaining: Double,
 )
 
-data class SessionSummary(val dir: File, val info: SessionInfo?, val rows: Int, val sizeBytes: Long)
+data class SessionSummary(
+    val dir: File,
+    val info: SessionInfo?,
+    val rows: Int,
+    val sizeBytes: Long,
+    val upload: SessionUploadState,
+)
 
 /** 画面の状態と操作をまとめる。撮影やスケジュールのロジックは camera/ schedule/ に任せる */
 class AppViewModel(private val app: Application) : AndroidViewModel(app) {
@@ -80,6 +92,8 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     private val sessionsRoot = SessionWriter.sessionsRoot(app)
     private val sessionWriter = SessionWriter(sessionsRoot)
     val monitor = DeviceMonitor(app, sessionsRoot)
+    private val uploads = UploadManager.get(app)
+    val uploadStatus: StateFlow<UploadStatus> = uploads.status
 
     val screen = MutableStateFlow(Screen.HOME)
 
@@ -126,6 +140,9 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private fun loadSets(cap: CapabilityReport) {
         var all = repo.loadAll()
+        // 前回送り残したものがあれば続きを送る
+        uploads.kick()
+        uploads.scheduleWorker()
         if (all.isEmpty()) {
             val set = DefaultPresets.create("講義室1", cap.model, cap.zoomMin)
             repo.save(set)
@@ -390,12 +407,18 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
         val zoomCap = cap.zoomCapability()
         val plans = set.enabledPresets.associate { it.id to it.zoomPlan(zoomCap) }
 
+        // サーバーが未設定なら、サーバーに送るモードでも端末にだけ保存する
+        val storageMode = uploads.mode.takeIf { !it.usesServer || uploadStatus.value.server != null } ?: StorageMode.LOCAL_ONLY
+        if (storageMode != uploads.mode) warnings += "サーバーが設定されていないため、端末にだけ保存しました"
+
         val start = Date()
         val dir = sessionWriter.createSessionDir(set.name, start)
         val info = SessionInfo(
             appVersion = BuildConfig.VERSION_NAME,
             presetSetName = set.name,
             capability = cap,
+            storageMode = storageMode.name,
+            serverDevice = uploadStatus.value.server?.device?.takeIf { storageMode.usesServer },
             startWallTime = CaptureScheduler.timestamp(start.time),
             periodSec = set.periodSec,
             stepSec = set.stepSec,
@@ -408,14 +431,27 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
 
         val s = CaptureScheduler(c, set, plans, rotation, dir, sessionWriter, info, monitor)
         scheduler = s
+        if (storageMode.usesServer) uploads.setLiveSession(dir)
         captureJob = viewModelScope.launch {
-            val progressJob = launch { s.progress.collect { captureProgress.value = it } }
+            val progressJob = launch {
+                s.progress.collect {
+                    captureProgress.value = it
+                    if (storageMode.usesServer) {
+                        uploads.onCaptureProgress(
+                            SystemClock.elapsedRealtime(), it.shots, it.late + it.skipped + it.errors,
+                            deviceStatus.value.thermalSevere,
+                        )
+                    }
+                }
+            }
             try {
                 s.run()
             } finally {
                 captureProgress.value = s.progress.value
                 progressJob.cancel()
                 scheduler = null
+                // session.json に終了時刻を書き終えてから、送信側に撮影の終了を知らせる
+                if (storageMode.usesServer) uploads.setLiveSession(null)
             }
         }
     }
@@ -438,13 +474,29 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
                     info = SessionWriter.readInfo(dir),
                     rows = if (csv.exists()) (csv.useLines { it.count() } - 1).coerceAtLeast(0) else 0,
                     sizeBytes = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
+                    upload = uploads.stateOf(dir),
                 )
             }
     }
 
     suspend fun deleteSession(dir: File) = withContext(Dispatchers.IO) {
-        if (dir.parentFile == sessionsRoot) dir.deleteRecursively()
+        if (dir.parentFile == sessionsRoot) {
+            dir.deleteRecursively()
+            uploads.onSessionDeleted(dir)
+        }
     }
+
+    fun requestUpload(dir: File) = uploads.requestUpload(dir)
+
+    // ---- 保存先・サーバー ----
+
+    fun setStorageMode(mode: StorageMode) = uploads.setMode(mode)
+
+    fun saveServer(config: ServerConfig) = uploads.saveServer(config)
+
+    fun clearServer() = uploads.clearServer()
+
+    suspend fun testConnection(config: ServerConfig): Result<HealthInfo> = uploads.testConnection(config)
 
     override fun onCleared() {
         closeCamera(cancelPendingStart = true)

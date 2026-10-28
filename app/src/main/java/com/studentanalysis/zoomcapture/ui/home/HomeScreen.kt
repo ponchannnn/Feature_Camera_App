@@ -53,6 +53,7 @@ fun HomeScreen(vm: AppViewModel) {
     val set by vm.selectedSet.collectAsState()
     val sets by vm.sets.collectAsState()
     val status by vm.deviceStatus.collectAsState()
+    val upload by vm.uploadStatus.collectAsState()
     val current = set
 
     Row(Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -104,6 +105,29 @@ fun HomeScreen(vm: AppViewModel) {
                 Text("空き容量 ${formatBytes(e.freeBytes)}(撮影できる時間の目安 ${formatDuration(e.secondsRemaining)})")
                 if (e.secondsRemaining < AppViewModel.LECTURE_SECONDS) {
                     Text("⚠ 空き容量が100分の撮影に足りません", color = Warning)
+                }
+            }
+            HorizontalDivider()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("保存先: ${upload.mode.label}", fontWeight = FontWeight.Bold)
+                    upload.server?.takeIf { upload.mode.usesServer }?.let {
+                        Text("${it.url}(端末名 ${it.device})", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                TextButton(onClick = { vm.navigate(Screen.SERVER) }) { Text("保存先の設定") }
+            }
+            if (upload.mode.usesServer && upload.server == null) {
+                Text("⚠ サーバーが設定されていないため、端末にだけ保存します", color = Warning)
+            }
+            if (upload.mode.usesServer) {
+                Text(
+                    "撮影中も画像はいったん端末に保存するので、端末の空き容量は上の見積もりのとおり必要です",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                upload.lastError?.let { Text("⚠ 送信エラー: $it", color = Warning, style = MaterialTheme.typography.bodySmall) }
+                if (upload.pendingSessions > 0) {
+                    Text("送り終えていないセッション: ${upload.pendingSessions} 件", style = MaterialTheme.typography.bodySmall)
                 }
             }
             Text(
